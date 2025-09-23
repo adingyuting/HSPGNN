@@ -435,7 +435,7 @@ def prepare_custom_dataset(
         train_split.recent, val_split.recent, test_split.recent
     )
 
-    dataset: DatasetDict = {
+    splits: DatasetDict = {
         "train": {
             "week": train_week,
             "week_mask": train_split.week_mask,
@@ -466,22 +466,22 @@ def prepare_custom_dataset(
             "target": test_split.target,
             "target_mask": test_split.target_mask,
         },
-        "stats": {
-            "week": week_stats,
-            "day": day_stats,
-            "recent": recent_stats,
-        },
     }
 
-    dataset = {
+    dataset: DatasetDict = {
         split: {key: value.astype(np.float32) for key, value in arrays.items()}
-        for split, arrays in dataset.items()
+        for split, arrays in splits.items()
     }
 
     stats: StatsDict = {
-        "week": week_stats,
-        "day": day_stats,
-        "recent": recent_stats,
+        component: {
+            name: values.astype(np.float32) for name, values in component_stats.items()
+        }
+        for component, component_stats in {
+            "week": week_stats,
+            "day": day_stats,
+            "recent": recent_stats,
+        }.items()
     }
 
     return dataset, stats, adjacency.astype(np.float32)
