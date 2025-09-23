@@ -1,0 +1,23 @@
+{
+  "timeseries": "data/my_dataset/timeseries.csv",
+  "adjacency": "data/my_dataset/adjacency.csv",
+  "delimiter": ",",
+  "transpose_timeseries": false,
+  "week_len": 12,
+  "day_len": 12,
+  "recent_len": 36,
+  "target_len": 6,
+  "train_ratio": 0.6,
+  "val_ratio": 0.2,
+  "batch_size": 32,
+  "max_epoch": 80,
+  "learning_rate": 0.0005,
+  "weight_decay": 0.0001,
+  "lr_decay": 0.95,
+  "model": "HSPGCN",
+  "hidden_dim": 64,
+  "K": 3,
+  "Kt": 3,
+  "output_dir": "experiments/my_dataset",
+  "save_predictions": true
+}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -20,6 +20,26 @@ MODEL_FACTORY = {
     "HSPGCN": HSPGCN,
     "HSPGCN_L": HSPGCN_L,
 }
+
+
+def _load_config_file(path: Path) -> Dict[str, Any]:
+    """Load a JSON configuration file and return its contents."""
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError as exc:  # pragma: no cover - defensive branch
+        raise ValueError(f"Configuration file {path} does not exist.") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Failed to parse JSON configuration file {path}: {exc.msg}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Configuration file {path} must contain a JSON object at the top level."
+        )
+    return data
 
 
 def build_dataloaders(
@@ -255,9 +275,27 @@ def train(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timeseries", required=True, help="CSV file with graph signals.")
-    parser.add_argument("--adjacency", required=True, help="CSV file with the adjacency matrix.")
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument(
+        "--config",
+        type=str,
+        help=(
+            "Path to a JSON configuration file. Values defined in the file are used "
+            "as defaults and may be overridden via additional command line flags."
+        ),
+    )
+
+    config_args, remaining_argv = config_parser.parse_known_args()
+    config_data: Dict[str, Any] = {}
+    config_path: Optional[Path] = None
+    if config_args.config:
+        config_path = Path(config_args.config)
+
+    parser = argparse.ArgumentParser(parents=[config_parser], description=__doc__)
+    parser.add_argument("--timeseries", help="CSV file with graph signals.", default=None)
+    parser.add_argument(
+        "--adjacency", help="CSV file with the adjacency matrix.", default=None
+    )
     parser.add_argument(
         "--delimiter", default=",", help="Delimiter shared by the CSV files (default: ',')."
     )
@@ -312,7 +350,53 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable shuffling of the training set batches.",
     )
-    return parser.parse_args()
+
+    if config_path is not None:
+        if not config_path.is_file():
+            parser.error(f"Configuration file {config_path} does not exist.")
+        try:
+            config_data = _load_config_file(config_path)
+        except ValueError as exc:
+            parser.error(str(exc))
+
+        known_options = {action.dest for action in parser._actions}
+        unknown_keys = sorted(set(config_data) - known_options)
+        if unknown_keys:
+            parser.error(
+                "Unknown configuration options: " + ", ".join(unknown_keys)
+            )
+
+        parser.set_defaults(**{**config_data, "config": str(config_path)})
+
+    args = parser.parse_args(remaining_argv)
+
+    if args.config:
+        resolved_config_path = Path(args.config)
+        path_fields = {"timeseries", "adjacency", "output_dir"}
+        for field in path_fields:
+            if field not in config_data:
+                continue
+            current_value = getattr(args, field, None)
+            config_value = config_data[field]
+            if current_value != config_value or not isinstance(current_value, str):
+                continue
+            candidate = Path(current_value).expanduser()
+            if candidate.is_absolute():
+                resolved_value = candidate
+            else:
+                resolved_value = (resolved_config_path.parent / candidate).resolve()
+            setattr(args, field, str(resolved_value))
+
+    if args.timeseries is None:
+        parser.error(
+            "A time-series CSV must be provided via --timeseries or the configuration file."
+        )
+    if args.adjacency is None:
+        parser.error(
+            "An adjacency CSV must be provided via --adjacency or the configuration file."
+        )
+
+    return args
 
 
 if __name__ == "__main__":
