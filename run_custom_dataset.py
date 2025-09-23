@@ -372,20 +372,47 @@ def parse_args() -> argparse.Namespace:
 
     if args.config:
         resolved_config_path = Path(args.config)
-        path_fields = {"timeseries", "adjacency", "output_dir"}
-        for field in path_fields:
+        config_dir = resolved_config_path.parent
+
+        def normalize_path(field: str, *, must_exist: bool) -> None:
             if field not in config_data:
-                continue
+                return
             current_value = getattr(args, field, None)
             config_value = config_data[field]
             if current_value != config_value or not isinstance(current_value, str):
-                continue
+                return
+
             candidate = Path(current_value).expanduser()
             if candidate.is_absolute():
-                resolved_value = candidate
+                setattr(args, field, str(candidate))
+                return
+
+            config_relative = (config_dir / candidate).resolve()
+            cwd_relative = candidate.resolve()
+
+            chosen_path: Optional[Path] = None
+            if must_exist:
+                if config_relative.exists():
+                    chosen_path = config_relative
+                elif cwd_relative.exists():
+                    chosen_path = cwd_relative
             else:
-                resolved_value = (resolved_config_path.parent / candidate).resolve()
-            setattr(args, field, str(resolved_value))
+                config_parent_exists = config_relative.parent.exists()
+                cwd_parent_exists = cwd_relative.parent.exists()
+                if config_parent_exists and not cwd_parent_exists:
+                    chosen_path = config_relative
+                elif cwd_parent_exists and not config_parent_exists:
+                    chosen_path = cwd_relative
+
+            if chosen_path is None:
+                # Default to interpreting the path relative to the config file.
+                chosen_path = config_relative
+
+            setattr(args, field, str(chosen_path))
+
+        normalize_path("timeseries", must_exist=True)
+        normalize_path("adjacency", must_exist=True)
+        normalize_path("output_dir", must_exist=False)
 
     if args.timeseries is None:
         parser.error(
