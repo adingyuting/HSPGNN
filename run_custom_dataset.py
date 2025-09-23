@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from argparse import Namespace, SUPPRESS
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -275,83 +276,87 @@ def train(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    config_parser = argparse.ArgumentParser(add_help=False)
-    config_parser.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
         "--config",
         type=str,
         help=(
             "Path to a JSON configuration file. Values defined in the file are used "
             "as defaults and may be overridden via additional command line flags."
         ),
+        default=SUPPRESS,
     )
-
-    config_args, remaining_argv = config_parser.parse_known_args()
-    config_data: Dict[str, Any] = {}
-    config_path: Optional[Path] = None
-    if config_args.config:
-        config_path = Path(config_args.config)
-
-    parser = argparse.ArgumentParser(parents=[config_parser], description=__doc__)
-    parser.add_argument("--timeseries", help="CSV file with graph signals.", default=None)
+    parser.add_argument("--timeseries", help="CSV file with graph signals.", default=SUPPRESS)
     parser.add_argument(
-        "--adjacency", help="CSV file with the adjacency matrix.", default=None
+        "--adjacency", help="CSV file with the adjacency matrix.", default=SUPPRESS
     )
     parser.add_argument(
-        "--delimiter", default=",", help="Delimiter shared by the CSV files (default: ',')."
+        "--delimiter",
+        default=SUPPRESS,
+        help="Delimiter shared by the CSV files (default: ',').",
     )
     parser.add_argument(
         "--transpose-timeseries",
         action="store_true",
+        default=SUPPRESS,
         help="Set when the time-series CSV stores timesteps as rows instead of columns.",
     )
     parser.add_argument(
         "--missing-value",
         type=float,
-        default=None,
+        default=SUPPRESS,
         help="Optional placeholder value in the CSV that should be treated as missing.",
     )
-    parser.add_argument("--week-len", type=int, default=12)
-    parser.add_argument("--day-len", type=int, default=12)
-    parser.add_argument("--recent-len", type=int, default=36)
-    parser.add_argument("--target-len", type=int, default=6)
-    parser.add_argument("--train-ratio", type=float, default=0.6)
-    parser.add_argument("--val-ratio", type=float, default=0.2)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--max-epoch", type=int, default=50)
-    parser.add_argument("--learning-rate", type=float, default=5e-4)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--lr-decay", type=float, default=1.0)
+    parser.add_argument("--week-len", type=int, default=SUPPRESS)
+    parser.add_argument("--day-len", type=int, default=SUPPRESS)
+    parser.add_argument("--recent-len", type=int, default=SUPPRESS)
+    parser.add_argument("--target-len", type=int, default=SUPPRESS)
+    parser.add_argument("--train-ratio", type=float, default=SUPPRESS)
+    parser.add_argument("--val-ratio", type=float, default=SUPPRESS)
+    parser.add_argument("--batch-size", type=int, default=SUPPRESS)
+    parser.add_argument("--max-epoch", type=int, default=SUPPRESS)
+    parser.add_argument("--learning-rate", type=float, default=SUPPRESS)
+    parser.add_argument("--weight-decay", type=float, default=SUPPRESS)
+    parser.add_argument("--lr-decay", type=float, default=SUPPRESS)
     parser.add_argument(
         "--device",
-        default="cpu",
+        default=SUPPRESS,
         help="Computation device, e.g. 'cpu' or 'cuda:0'. Default uses the CPU.",
     )
     parser.add_argument(
         "--model",
         choices=sorted(MODEL_FACTORY.keys()),
-        default="HSPGCN",
+        default=SUPPRESS,
         help="Model variant to train (default: HSPGCN).",
     )
-    parser.add_argument("--hidden-dim", type=int, default=64, help="Hidden dimension for the model.")
-    parser.add_argument("--K", type=int, default=3, help="Chebyshev polynomial order.")
-    parser.add_argument("--Kt", type=int, default=3, help="Temporal kernel size.")
+    parser.add_argument("--hidden-dim", type=int, default=SUPPRESS, help="Hidden dimension for the model.")
+    parser.add_argument("--K", type=int, default=SUPPRESS, help="Chebyshev polynomial order.")
+    parser.add_argument("--Kt", type=int, default=SUPPRESS, help="Temporal kernel size.")
     parser.add_argument(
         "--output-dir",
-        default="custom_experiments",
+        default=SUPPRESS,
         help="Directory where checkpoints and predictions will be stored.",
     )
     parser.add_argument(
         "--save-predictions",
         action="store_true",
+        default=SUPPRESS,
         help="Store the model predictions for the testing split as a compressed NPZ file.",
     )
     parser.add_argument(
         "--no-shuffle",
         action="store_true",
+        default=SUPPRESS,
         help="Disable shuffling of the training set batches.",
     )
 
-    if config_path is not None:
+    raw_args = parser.parse_args()
+    raw_dict = vars(raw_args)
+
+    config_data: Dict[str, Any] = {}
+    config_path: Optional[Path] = None
+    if "config" in raw_dict:
+        config_path = Path(raw_dict.pop("config")).expanduser()
         if not config_path.is_file():
             parser.error(f"Configuration file {config_path} does not exist.")
         try:
@@ -359,27 +364,55 @@ def parse_args() -> argparse.Namespace:
         except ValueError as exc:
             parser.error(str(exc))
 
-        known_options = {action.dest for action in parser._actions}
+    defaults: Dict[str, Any] = {
+        "timeseries": None,
+        "adjacency": None,
+        "delimiter": ",",
+        "transpose_timeseries": False,
+        "missing_value": None,
+        "week_len": 12,
+        "day_len": 12,
+        "recent_len": 36,
+        "target_len": 6,
+        "train_ratio": 0.6,
+        "val_ratio": 0.2,
+        "batch_size": 16,
+        "max_epoch": 50,
+        "learning_rate": 5e-4,
+        "weight_decay": 0.0,
+        "lr_decay": 1.0,
+        "device": "cpu",
+        "model": "HSPGCN",
+        "hidden_dim": 64,
+        "K": 3,
+        "Kt": 3,
+        "output_dir": "custom_experiments",
+        "save_predictions": False,
+        "no_shuffle": False,
+    }
+
+    if config_data:
+        known_options = set(defaults)
+        known_options.add("config")
         unknown_keys = sorted(set(config_data) - known_options)
         if unknown_keys:
             parser.error(
                 "Unknown configuration options: " + ", ".join(unknown_keys)
             )
 
-        parser.set_defaults(**{**config_data, "config": str(config_path)})
+    resolved: Dict[str, Any] = {**defaults, **config_data, **raw_dict}
+    resolved["config"] = str(config_path) if config_path is not None else None
 
-    args = parser.parse_args(remaining_argv)
+    args = Namespace(**resolved)
 
-    if args.config:
-        resolved_config_path = Path(args.config)
-        config_dir = resolved_config_path.parent
+    if config_path is not None:
+        config_dir = config_path.parent
 
         def normalize_path(field: str, *, must_exist: bool) -> None:
-            if field not in config_data:
+            if field not in config_data or field in raw_dict:
                 return
             current_value = getattr(args, field, None)
-            config_value = config_data[field]
-            if current_value != config_value or not isinstance(current_value, str):
+            if not isinstance(current_value, str):
                 return
 
             candidate = Path(current_value).expanduser()
@@ -405,7 +438,6 @@ def parse_args() -> argparse.Namespace:
                     chosen_path = cwd_relative
 
             if chosen_path is None:
-                # Default to interpreting the path relative to the config file.
                 chosen_path = config_relative
 
             setattr(args, field, str(chosen_path))
