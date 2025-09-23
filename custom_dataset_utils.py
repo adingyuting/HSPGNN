@@ -165,9 +165,12 @@ def _fill_missing_with_mean(data: np.ndarray, nan_mask: np.ndarray) -> np.ndarra
     filled = data.copy()
     # Compute the mean along the temporal axis for every node.
     node_means = np.nanmean(filled, axis=1, keepdims=True)
-    # Guard against nodes that are entirely NaN.
-    node_means = np.where(np.isnan(node_means), 0.0, node_means)
-    filled[nan_mask] = np.take(node_means, np.where(nan_mask)[0], axis=0)
+    # Guard against nodes that are entirely NaN by falling back to zeros.
+    node_means = np.nan_to_num(node_means, nan=0.0)
+    # ``nan_mask`` is a 2-D boolean array; broadcasting ``node_means`` ensures
+    # each missing entry receives the corresponding node's temporal mean
+    # without relying on flattened indexing that breaks on NumPy >= 1.24.
+    filled = np.where(nan_mask, node_means, filled)
     return filled.astype(np.float32)
 
 
