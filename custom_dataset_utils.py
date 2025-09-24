@@ -22,7 +22,9 @@ Typical usage::
 
 The returned ``dataset`` dictionary contains ``train``/``val``/``test``
 sub-dictionaries with NumPy arrays that can be wrapped into ``TensorDataset``
-instances directly.
+instances directly.  The validation split mirrors the testing split so that
+workflows expecting a ``val`` key continue to operate when only a train/test
+division is desired.
 """
 
 from __future__ import annotations
@@ -241,40 +243,53 @@ def _generate_samples(
     return samples
 
 
-def _split_samples(
+def _split_train_test(
     samples: Sequence[Tuple[np.ndarray, ...]],
     *,
     train_ratio: float,
-    val_ratio: float,
-) -> Tuple[Sequence[Tuple[np.ndarray, ...]], Sequence[Tuple[np.ndarray, ...]], Sequence[Tuple[np.ndarray, ...]]]:
-    """Split samples chronologically into train/validation/test segments."""
+    test_ratio: float,
+) -> Tuple[Sequence[Tuple[np.ndarray, ...]], Sequence[Tuple[np.ndarray, ...]]]:
+    """Split samples chronologically into training and testing segments."""
 
     if not 0 < train_ratio < 1:
         raise ValueError("train_ratio must be between 0 and 1.")
-    if not 0 <= val_ratio < 1:
-        raise ValueError("val_ratio must be between 0 and 1.")
-    if train_ratio + val_ratio >= 1:
-        raise ValueError("train_ratio + val_ratio must be smaller than 1.")
+    if not 0 < test_ratio <= 1:
+        raise ValueError("test_ratio must be between 0 and 1 inclusive.")
+
+    # When the provided ratios do not sum to 1, rescale them so that the full
+    # dataset is consumed by the two splits while keeping their relative
+    # proportions intact.
+    ratio_sum = train_ratio + test_ratio
+    if ratio_sum <= 0:
+        raise ValueError("train_ratio + test_ratio must be positive.")
+    if ratio_sum != 1.0:
+        train_ratio = train_ratio / ratio_sum
+        test_ratio = test_ratio / ratio_sum
 
     total = len(samples)
-    if total < 3:
+    if total < 2:
         raise ValueError(
-            "At least three samples are required to create train/val/test splits."
+            "At least two samples are required to create train/test splits."
         )
 
-    train_count = max(int(total * train_ratio), 1)
-    val_count = max(int(total * val_ratio), 1)
-    if train_count + val_count >= total:
-        # Guarantee that a testing set exists.
-        val_count = max(1, total - train_count - 1)
-    test_count = total - train_count - val_count
+    # Convert the ratios into counts while ensuring that both splits contain at
+    # least one sample and that rounding does not drop any data.
+    train_count = int(round(total * train_ratio))
+    train_count = max(min(train_count, total - 1), 1)
+    test_count = total - train_count
     if test_count <= 0:
-        raise ValueError("Not enough samples left for the testing split.")
+        # Extremely small datasets may round the testing portion down to zero.
+        # In that case, steal one element from the training set.
+        if train_count <= 1:
+            raise ValueError(
+                "Unable to create a testing split; provide more temporal samples."
+            )
+        train_count -= 1
+        test_count = 1
 
     train_split = samples[:train_count]
-    val_split = samples[train_count : train_count + val_count]
-    test_split = samples[train_count + val_count :]
-    return train_split, val_split, test_split
+    test_split = samples[train_count:]
+    return train_split, test_split
 
 
 def _stack_component(
@@ -383,15 +398,18 @@ def prepare_custom_dataset(
         Window sizes for the temporal context and prediction horizon.  The
         defaults match the configuration used by the original repository.
     train_ratio, val_ratio:
-        Fractions used to split the samples chronologically.  The remainder
-        of the samples is used for testing.
+        Fractions used to split the samples chronologically.  ``train_ratio``
+        controls the fraction assigned to the training split while
+        ``val_ratio`` denotes the desired fraction for testing.  The
+        validation split mirrors the testing portion so downstream code can
+        continue to access both keys.
 
     Returns
     -------
     Tuple[DatasetDict, StatsDict, np.ndarray]
-        ``dataset`` containing the ``train``/``val``/``test`` splits, ``stats``
-        with the normalization information and the adjacency matrix as a
-        NumPy array.
+        ``dataset`` containing the ``train``/``val``/``test`` splits (with the
+        validation split mirroring the testing data), ``stats`` with the
+        normalization information and the adjacency matrix as a NumPy array.
     """
 
     data, observation_mask = load_time_series(
@@ -416,12 +434,15 @@ def prepare_custom_dataset(
         recent_len=recent_len,
         target_len=target_len,
     )
-    train_samples, val_samples, test_samples = _split_samples(
-        samples, train_ratio=train_ratio, val_ratio=val_ratio
+    train_samples, test_samples = _split_train_test(
+        samples, train_ratio=train_ratio, test_ratio=val_ratio
     )
 
     train_split = _to_split_dict(train_samples)
-    val_split = _to_split_dict(val_samples)
+    # The validation split is intentionally identical to the testing split to
+    # accommodate training loops that expect both keys while operating with a
+    # classic train/test partition.
+    val_split = _to_split_dict(test_samples)
     test_split = _to_split_dict(test_samples)
 
     # Normalise each component separately using training statistics.

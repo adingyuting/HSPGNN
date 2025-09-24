@@ -401,8 +401,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--day-len", type=int, default=SUPPRESS)
     parser.add_argument("--recent-len", type=int, default=SUPPRESS)
     parser.add_argument("--target-len", type=int, default=SUPPRESS)
-    parser.add_argument("--train-ratio", type=float, default=SUPPRESS)
-    parser.add_argument("--val-ratio", type=float, default=SUPPRESS)
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=SUPPRESS,
+        help="Fraction of samples allocated to training before chronological splitting.",
+    )
+    parser.add_argument(
+        "--val-ratio",
+        type=float,
+        default=SUPPRESS,
+        help=(
+            "Fraction of samples allocated to testing. The validation split mirrors this "
+            "portion so existing training loops can continue to reference 'val'."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=SUPPRESS)
     parser.add_argument("--max-epoch", type=int, default=SUPPRESS)
     parser.add_argument("--learning-rate", type=float, default=SUPPRESS)
