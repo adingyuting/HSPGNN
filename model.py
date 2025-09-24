@@ -119,7 +119,7 @@ class HSPGCNImputer(nn.Module):
         self.fc3 = torch.nn.Linear(200, 200)
         self.fc4 = torch.nn.Linear(200, tem_size)
 
-        self.reconstruction = Conv2d(c_out, 1, kernel_size=(1, 1), padding=(0, 0), bias=True)
+        self.reconstruction = Conv2d(1, 1, kernel_size=(1, 1), padding=(0, 0), bias=True)
 
     def forward(self, x_w, x_w_mask, x_d, x_d_mask, x_r, x_r_mask, train_t_mask, supports):
         x = torch.cat((x_w, x_d, x_r), -1)
@@ -137,6 +137,15 @@ class HSPGCNImputer(nn.Module):
         y1, d_adj = self.physics_layer(aa, A, train_t_mask)
 
         decoded, _, _, ff = self.physics_decode(y1, A, train_t_mask)
+
+        if decoded.dim() != 4:
+            raise RuntimeError(
+                "Physics decoder returned a tensor with unexpected shape: "
+                f"{decoded.shape}"
+            )
+
+        if decoded.size(1) != 1:
+            decoded = decoded.mean(dim=1, keepdim=True)
 
         values = self.reconstruction(decoded).squeeze(1)
 

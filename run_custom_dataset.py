@@ -23,23 +23,111 @@ MODEL_FACTORY = {
 }
 
 
+def _strip_json_comments(text: str) -> str:
+    """Remove JavaScript-style comments from JSON-like text."""
+
+    result_chars = []
+    in_string = False
+    escape = False
+    in_single_line_comment = False
+    in_multi_line_comment = False
+    i = 0
+    length = len(text)
+
+    while i < length:
+        ch = text[i]
+        next_ch = text[i + 1] if i + 1 < length else ""
+
+        if in_single_line_comment:
+            if ch in "\n\r":
+                in_single_line_comment = False
+                result_chars.append(ch)
+            i += 1
+            continue
+
+        if in_multi_line_comment:
+            if ch == "*" and next_ch == "/":
+                in_multi_line_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if in_string:
+            result_chars.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            result_chars.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and next_ch == "/":
+            in_single_line_comment = True
+            i += 2
+            continue
+
+        if ch == "/" and next_ch == "*":
+            in_multi_line_comment = True
+            i += 2
+            continue
+
+        if ch == "#":
+            in_single_line_comment = True
+            i += 1
+            continue
+
+        result_chars.append(ch)
+        i += 1
+
+    return "".join(result_chars)
+
+
 def _load_config_file(path: Path) -> Dict[str, Any]:
     """Load a JSON configuration file and return its contents."""
 
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
+        raw_text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError as exc:  # pragma: no cover - defensive branch
         raise ValueError(f"Configuration file {path} does not exist.") from exc
+
+    try:
+        data = json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Failed to parse JSON configuration file {path}: {exc.msg}"
-        ) from exc
+        sanitized = _strip_json_comments(raw_text)
+        if sanitized != raw_text:
+            try:
+                data = json.loads(sanitized)
+            except json.JSONDecodeError as exc2:
+                raise ValueError(
+                    (
+                        "Failed to parse JSON configuration file "
+                        f"{path}: {exc2.msg} (line {exc2.lineno}, column {exc2.colno})"
+                    )
+                ) from exc2
+        else:
+            raise ValueError(
+                (
+                    "Failed to parse JSON configuration file "
+                    f"{path}: {exc.msg} (line {exc.lineno}, column {exc.colno})"
+                )
+            ) from exc
+    else:
+        sanitized = None
 
     if not isinstance(data, dict):
         raise ValueError(
             f"Configuration file {path} must contain a JSON object at the top level."
         )
+
     return data
 
 
