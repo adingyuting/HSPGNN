@@ -392,6 +392,23 @@ def parse_args() -> argparse.Namespace:
     }
 
     if config_data:
+        def _consume_alias(alias: str, canonical: str) -> None:
+            """Map alternate configuration keys to the canonical CLI flag."""
+
+            if alias in config_data:
+                if canonical not in config_data:
+                    config_data[canonical] = config_data[alias]
+                config_data.pop(alias, None)
+
+        # Allow intuitive aliases that mirror the helper function signature or
+        # documentation examples.  Users that followed earlier revisions of the
+        # script may still rely on these names.
+        _consume_alias("timeseries_path", "timeseries")
+        _consume_alias("adjacency_path", "adjacency")
+        _consume_alias("output_path", "output_dir")
+        _consume_alias("output_directory", "output_dir")
+        _consume_alias("save_prediction", "save_predictions")
+
         known_options = set(defaults)
         known_options.add("config")
         unknown_keys = sorted(set(config_data) - known_options)
@@ -420,8 +437,8 @@ def parse_args() -> argparse.Namespace:
                 setattr(args, field, str(candidate))
                 return
 
-            config_relative = (config_dir / candidate).resolve()
-            cwd_relative = candidate.resolve()
+            config_relative = (config_dir / candidate).resolve(strict=False)
+            cwd_relative = candidate.resolve(strict=False)
 
             chosen_path: Optional[Path] = None
             if must_exist:
