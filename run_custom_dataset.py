@@ -461,6 +461,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "output_dir": "custom_experiments",
         "save_predictions": False,
         "no_shuffle": False,
+        "single_scale": False,
     }
 
     if config_data:
@@ -484,6 +485,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         _consume_alias("output_path", "output_dir")
         _consume_alias("output_directory", "output_dir")
         _consume_alias("save_prediction", "save_predictions")
+        _consume_alias("disable_multiscale", "single_scale")
+        _consume_alias("single_scale_mode", "single_scale")
 
     parser = argparse.ArgumentParser(description=__doc__, argument_default=SUPPRESS)
     parser.add_argument(
@@ -519,6 +522,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--week-len", type=int, default=SUPPRESS)
     parser.add_argument("--day-len", type=int, default=SUPPRESS)
     parser.add_argument("--recent-len", type=int, default=SUPPRESS)
+    parser.add_argument(
+        "--single-scale",
+        action="store_true",
+        default=SUPPRESS,
+        help=(
+            "Collapse the temporal context into a single window so the model only "
+            "observes one scale of history."
+        ),
+    )
     parser.add_argument(
         "--target-len",
         type=int,
@@ -700,6 +712,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     if args.max_epoch is not None and args.max_epoch < 1:
         parser.error("--max-epoch must be a positive integer when provided.")
+
+    if getattr(args, "single_scale", False):
+        total_history = args.week_len + args.day_len + args.recent_len
+        if total_history <= 0:
+            parser.error(
+                "--single-scale requires a positive total history length; adjust the "
+                "week/day/recent parameters."
+            )
+        args.week_len = total_history
+        args.day_len = 0
+        args.recent_len = 0
 
     if args.patience is None and args.max_epoch is None:
         parser.error("At least one of --patience or --max-epoch must be specified.")
