@@ -43,9 +43,10 @@ class T_cheby_conv_ds(nn.Module):
         nSample, feat_in, nNode, length  = x.shape
         # calculat one-order laplacian matrix
         device = x.device
+        dtype = x.dtype
         Ls = []
         L1 = adj.to(device)
-        L0 = torch.eye(nNode, device=device).repeat(nSample, 1, 1)
+        L0 = torch.eye(nNode, device=device, dtype=dtype).repeat(nSample, 1, 1)
         Ls.append(L0)
         Ls.append(L1)
 
@@ -57,19 +58,14 @@ class T_cheby_conv_ds(nn.Module):
         x2 = x2.view(nSample, -1, nNode, length)
         out2 = self.conv2(x2)
 
-        time_toeplitz_matrix = np.eye(nNode)
-        for ii in range(nNode - 1):
-            time_toeplitz_matrix[ii, ii + 1] = -1
-        total_time_toeplitz_matrix = np.zeros(([Lap.shape[0],1,Lap.shape[2],Lap.shape[3]]))
+        base_identity = torch.eye(nNode, device=device, dtype=dtype)
+        time_toeplitz = base_identity.clone()
+        if nNode > 1:
+            idx = torch.arange(nNode - 1, device=device)
+            time_toeplitz[idx, idx + 1] = -1.0
 
-        II = np.eye(nNode)
-        III = np.zeros(([Lap.shape[0],1,Lap.shape[2],Lap.shape[3]]))
-
-        for jj in range(Lap.shape[0]):
-            total_time_toeplitz_matrix[jj, :, :, :] = time_toeplitz_matrix
-            III[jj, :, :, :] = II
-        Toeplitz = torch.tensor(total_time_toeplitz_matrix, dtype=torch.float32, device=device)
-        IIII = torch.tensor(III, dtype=torch.float32, device=device)
+        Toeplitz = time_toeplitz.unsqueeze(0).expand(nSample, -1, -1).unsqueeze(1).contiguous()
+        IIII = base_identity.unsqueeze(0).expand(nSample, -1, -1).unsqueeze(1).contiguous()
 
 
         # calculat zero-order laplacian convolution
