@@ -149,7 +149,15 @@ def train(args: argparse.Namespace) -> None:
         raise ValueError("The current model outputs six steps; set --target-len 6.")
 
     num_nodes = adjacency.shape[0]
-    device = torch.device(args.device)
+    requested_device = torch.device(args.device)
+    if requested_device.type == "cuda" and not torch.cuda.is_available():
+        print(
+            "CUDA was requested but is not available; falling back to the CPU instead.",
+            flush=True,
+        )
+        requested_device = torch.device("cpu")
+
+    device = requested_device
 
     train_loader, val_loader, test_loader = build_dataloaders(
         dataset, batch_size=args.batch_size, shuffle_train=not args.no_shuffle
