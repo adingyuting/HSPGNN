@@ -16,7 +16,7 @@ x-> [batch_num,in_channels,num_nodes,tem_size],
 """
 
 class HSPGCN(nn.Module):
-    def __init__(self,c_in,c_out,num_nodes,week,day,recent,K,Kt): 
+    def __init__(self,c_in,c_out,num_nodes,week,day,recent,K,Kt):
         super(HSPGCN,self).__init__()
         tem_size=week+day+recent
         self.tem_size = tem_size
@@ -98,6 +98,58 @@ class HSPGCN(nn.Module):
         x=x1+x2+x3+x4+x5+x6+x7+x8+x9+x10
 
         return x,d_adj,ff,y1
+
+
+class HSPGCNImputer(nn.Module):
+    def __init__(self, c_in, c_out, num_nodes, week, day, recent, K, Kt):
+        super(HSPGCNImputer, self).__init__()
+        tem_size = week + day + recent
+        self.tem_size = tem_size
+        self.week = week
+        self.day = day
+        self.recent = recent
+
+        self.physics_layer = PHYSICS_LAYER(c_out, c_out, num_nodes, tem_size, K, Kt)
+        self.physics_decode = PHYSICS_DECODER(c_out, c_out, num_nodes, tem_size, K, Kt)
+
+        self.bn = BatchNorm2d(c_in, affine=False)
+
+        self.fc1 = torch.nn.Linear(tem_size, 100)
+        self.fc2 = torch.nn.Linear(100, 200)
+        self.fc3 = torch.nn.Linear(200, 200)
+        self.fc4 = torch.nn.Linear(200, tem_size)
+
+        self.reconstruction = Conv2d(1, 1, kernel_size=(1, 1), padding=(0, 0), bias=True)
+
+    def forward(self, x_w, x_w_mask, x_d, x_d_mask, x_r, x_r_mask, train_t_mask, supports):
+        x = torch.cat((x_w, x_d, x_r), -1)
+        A = supports
+
+        x1 = self.fc1(x)
+        x1 = F.relu(x1)
+        x1 = self.fc2(x1)
+        x1 = F.relu(x1)
+        x1 = self.fc3(x1)
+        x1 = F.relu(x1)
+        x1 = self.fc4(x1)
+        aa = F.relu(x1)
+
+        y1, d_adj = self.physics_layer(aa, A, train_t_mask)
+
+        decoded, _, _, ff = self.physics_decode(y1, A, train_t_mask)
+
+        if decoded.dim() != 4:
+            raise RuntimeError(
+                "Physics decoder returned a tensor with unexpected shape: "
+                f"{decoded.shape}"
+            )
+
+        if decoded.size(1) != 1:
+            decoded = decoded.mean(dim=1, keepdim=True)
+
+        values = self.reconstruction(decoded).squeeze(1)
+
+        return values, d_adj, ff, y1
 
 
 class HSPGCN_L(nn.Module):
