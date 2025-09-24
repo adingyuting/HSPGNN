@@ -42,9 +42,10 @@ class T_cheby_conv_ds(nn.Module):
     def forward(self,x,adj):
         nSample, feat_in, nNode, length  = x.shape
         # calculat one-order laplacian matrix
+        device = x.device
         Ls = []
-        L1 = adj
-        L0 = torch.eye(nNode).repeat(nSample,1,1).cuda()
+        L1 = adj.to(device)
+        L0 = torch.eye(nNode, device=device).repeat(nSample, 1, 1)
         Ls.append(L0)
         Ls.append(L1)
 
@@ -67,8 +68,8 @@ class T_cheby_conv_ds(nn.Module):
         for jj in range(Lap.shape[0]):
             total_time_toeplitz_matrix[jj, :, :, :] = time_toeplitz_matrix
             III[jj, :, :, :] = II
-        Toeplitz = torch.tensor(total_time_toeplitz_matrix, dtype=torch.float32).cuda()
-        IIII = torch.tensor(III, dtype=torch.float32).cuda()
+        Toeplitz = torch.tensor(total_time_toeplitz_matrix, dtype=torch.float32, device=device)
+        IIII = torch.tensor(III, dtype=torch.float32, device=device)
 
 
         # calculat zero-order laplacian convolution
@@ -95,7 +96,7 @@ for i in range(24):
     for j in range(24):        
         A[i+36,j+36]=1
 B=(-1e13)*(1-A)  
-B=(torch.tensor(B)).type(torch.float32).cuda()
+B = torch.tensor(B, dtype=torch.float32)
 
 
 class TATT_1(nn.Module):
@@ -129,8 +130,8 @@ class TATT_1(nn.Module):
         #logits = logits - a
 
         logits = logits.permute(0,2,1).contiguous()
-        logits=self.bn(logits).permute(0,2,1).contiguous()
-        coefs = torch.softmax(logits+B,-1)
+        logits = self.bn(logits).permute(0,2,1).contiguous()
+        coefs = torch.softmax(logits + B.to(logits.device), -1)
         return coefs
 
 
@@ -209,10 +210,11 @@ class PHYSICS_DECODER(nn.Module):
         x_1 = self.dynamic_gcn(x, adj_out1)
         x_1 = F.leaky_relu(x_1)
         shape = x.shape
+        device = x.device
         ff = x
 
-        h = Variable(torch.zeros((1, shape[0] * shape[2], shape[3]))).cuda()
-        c = Variable(torch.zeros((1, shape[0] * shape[2], shape[3]))).cuda()
+        h = Variable(torch.zeros((1, shape[0] * shape[2], shape[3]), device=device))
+        c = Variable(torch.zeros((1, shape[0] * shape[2], shape[3]), device=device))
         hidden = (h, c)
 
         kk = x_1.permute(0, 2, 1, 3).contiguous().view(shape[0] * shape[2], shape[1], shape[3])
