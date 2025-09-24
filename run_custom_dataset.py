@@ -1,4 +1,4 @@
-"""Train an HSPGNN model on custom CSV data for forecasting or imputation."""
+"""Train an HSPGNN model on custom CSV data for missing-value imputation."""
 
 from __future__ import annotations
 
@@ -15,16 +15,12 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from custom_dataset_utils import prepare_custom_dataset
-from model import HSPGCN, HSPGCNImputer, HSPGCN_L
+from model import HSPGCNImputer
 
 
 MODEL_FACTORY = {
-    "HSPGCN": HSPGCN,
-    "HSPGCN_L": HSPGCN_L,
     "HSPGCNImputer": HSPGCNImputer,
 }
-
-IMPUTATION_MODELS = {"HSPGCNImputer"}
 
 
 def _load_config_file(path: Path) -> Dict[str, Any]:
@@ -142,26 +138,17 @@ def train(args: argparse.Namespace) -> None:
         target_len=args.target_len,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
-        task=args.task,
         impute_rate=args.impute_rate,
         impute_seed=args.impute_seed,
     )
 
     temporal_window = args.week_len + args.day_len + args.recent_len
-    if args.task == "forecast":
-        if temporal_window != 60:
-            raise ValueError(
-                "The current forecasting heads expect week_len + day_len + recent_len to equal 60."
-            )
-        if args.target_len != 6:
-            raise ValueError("The forecasting models output six steps; set --target-len 6.")
-    else:
-        target_horizon = dataset["train"]["target"].shape[-1]
-        if target_horizon != temporal_window:
-            raise ValueError(
-                "Imputation datasets must expose the full temporal window as the target. "
-                f"Received {target_horizon} steps instead of {temporal_window}."
-            )
+    target_horizon = dataset["train"]["target"].shape[-1]
+    if target_horizon != temporal_window:
+        raise ValueError(
+            "Imputation datasets must expose the full temporal window as the target. "
+            f"Received {target_horizon} steps instead of {temporal_window}."
+        )
 
     num_nodes = adjacency.shape[0]
     requested_device = torch.device(args.device)
@@ -340,10 +327,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "week_len": 12,
         "day_len": 12,
         "recent_len": 36,
-        "target_len": 6,
+        "target_len": 0,
         "train_ratio": 0.6,
         "val_ratio": 0.2,
-        "task": "forecast",
         "impute_rate": 0.1,
         "impute_seed": None,
         "batch_size": 16,
@@ -352,7 +338,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "weight_decay": 0.0,
         "lr_decay": 1.0,
         "device": "cpu",
-        "model": "HSPGCN",
+        "model": "HSPGCNImputer",
         "hidden_dim": 64,
         "K": 3,
         "Kt": 3,
@@ -417,7 +403,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--week-len", type=int, default=SUPPRESS)
     parser.add_argument("--day-len", type=int, default=SUPPRESS)
     parser.add_argument("--recent-len", type=int, default=SUPPRESS)
-    parser.add_argument("--target-len", type=int, default=SUPPRESS)
+    parser.add_argument(
+        "--target-len",
+        type=int,
+        default=SUPPRESS,
+        help="Ignored for imputation; the reconstruction horizon equals week+day+recent.",
+    )
     parser.add_argument(
         "--train-ratio",
         type=float,
@@ -434,16 +425,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--task",
-        choices=("forecast", "impute"),
-        default=SUPPRESS,
-        help="Learning objective: 'forecast' (default) or 'impute' for missing-value completion.",
-    )
-    parser.add_argument(
         "--impute-rate",
         type=float,
         default=SUPPRESS,
-        help="When --task=impute, fraction of observed entries masked per sample (default: 0.1).",
+        help="Fraction of observed entries masked per sample (default: 0.1).",
     )
     parser.add_argument(
         "--impute-seed",
@@ -465,7 +450,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--model",
         choices=sorted(MODEL_FACTORY.keys()),
         default=SUPPRESS,
-        help="Model variant to train (default: HSPGCN).",
+        help="Model variant to train (default: HSPGCNImputer).",
     )
     parser.add_argument("--hidden-dim", type=int, default=SUPPRESS, help="Hidden dimension for the model.")
     parser.add_argument("--K", type=int, default=SUPPRESS, help="Chebyshev polynomial order.")
@@ -553,22 +538,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "An adjacency CSV must be provided via --adjacency or the configuration file."
         )
 
-    if args.task not in {"forecast", "impute"}:
-        parser.error("--task must be either 'forecast' or 'impute'.")
-
-    provided_model = "model" in raw_dict or "model" in config_data
-    if args.task == "impute":
-        if not provided_model:
-            args.model = "HSPGCNImputer"
-        elif args.model not in IMPUTATION_MODELS:
-            parser.error(
-                "Imputation mode requires one of the following models: "
-                + ", ".join(sorted(IMPUTATION_MODELS))
-            )
-    elif args.model in IMPUTATION_MODELS:
-        parser.error(
-            "The selected model is designed for imputation. Specify --task impute to use it."
-        )
+    if "model" not in raw_dict and "model" not in config_data:
+        args.model = "HSPGCNImputer"
 
     return args
 

@@ -7,6 +7,12 @@ logic.  The utilities intentionally mirror the layout created by
 ``lib.data_preparation.read_and_generate_dataset`` but remove the dataset
 specific assumptions so that arbitrary graph signals can be consumed.
 
+The routines focus on *missing-value imputation* tasks: the temporal context
+windows are normalised and a fraction of observed entries is masked out so the
+model learns to reconstruct them.  Forecasting-specific branches from earlier
+revisions were removed to keep the helpers dedicated to the imputation use
+case.
+
 Typical usage::
 
     from custom_dataset_utils import prepare_custom_dataset
@@ -17,7 +23,6 @@ Typical usage::
         week_len=12,
         day_len=12,
         recent_len=36,
-        target_len=6,
     )
 
 The returned ``dataset`` dictionary contains ``train``/``val``/``test``
@@ -32,6 +37,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
+
+import warnings
 
 import numpy as np
 
@@ -61,7 +68,9 @@ class DatasetSplit:
     recent_mask: np.ndarray
         Mask aligned with ``recent``.
     target: np.ndarray
-        Array with shape ``(samples, num_nodes, target_len)``.
+        Array with shape ``(samples, num_nodes, target_len)`` where
+        ``target_len`` equals ``week_len + day_len + recent_len`` for the
+        imputation task.
     target_mask: np.ndarray
         Mask aligned with ``target``.
     """
@@ -376,14 +385,13 @@ def prepare_custom_dataset(
     week_len: int = 12,
     day_len: int = 12,
     recent_len: int = 36,
-    target_len: int = 6,
+    target_len: int = 0,
     train_ratio: float = 0.6,
     val_ratio: float = 0.2,
-    task: str = "forecast",
     impute_rate: float = 0.1,
     impute_seed: int | None = None,
 ) -> Tuple[DatasetDict, StatsDict, np.ndarray]:
-    """Prepare a dataset compatible with the training scripts.
+    """Prepare a dataset compatible with the imputation training scripts.
 
     Parameters
     ----------
@@ -398,27 +406,21 @@ def prepare_custom_dataset(
     missing_value:
         Optional sentinel value that represents a missing observation.
     week_len, day_len, recent_len, target_len:
-        Window sizes for the temporal context and prediction horizon.  The
-        defaults match the configuration used by the original repository.  When
-        ``task="impute"`` the ``target_len`` argument is ignored and the
-        complete temporal context (``week_len + day_len + recent_len``) becomes
-        the reconstruction target.
+        Window sizes for the temporal context.  ``target_len`` is retained for
+        backward compatibility but ignored – the complete temporal context
+        (``week_len + day_len + recent_len``) always forms the reconstruction
+        target for imputation.
     train_ratio, val_ratio:
         Fractions used to split the samples chronologically.  ``train_ratio``
         controls the fraction assigned to the training split while
         ``val_ratio`` denotes the desired fraction for testing.  The
         validation split mirrors the testing portion so downstream code can
         continue to access both keys.
-    task:
-        Specifies the learning objective.  ``"forecast"`` (default) trains the
-        original six-step forecasting head.  ``"impute"`` corrupts the inputs
-        with additional random masks and teaches the network to reconstruct the
-        masked values within the temporal context window.
     impute_rate:
-        When ``task="impute"``, the fraction of observed entries that are
-        dropped at random and used as supervised targets.  The mask is applied
-        independently to the train/validation/testing splits with distinct
-        random generators for reproducibility.
+        Fraction of observed entries that are dropped at random and used as
+        supervised targets.  The mask is applied independently to the
+        train/validation/testing splits with distinct random generators for
+        reproducibility.
     impute_seed:
         Optional random seed used when generating the artificial missing masks
         for the imputation task.  ``None`` (default) relies on NumPy's global
@@ -446,11 +448,17 @@ def prepare_custom_dataset(
             % (data.shape[0], adjacency.shape[0])
         )
 
-    if task not in {"forecast", "impute"}:
-        raise ValueError("task must be either 'forecast' or 'impute'.")
-
-    if task == "impute" and not 0 < impute_rate <= 1.0:
+    if not 0 < impute_rate <= 1.0:
         raise ValueError("impute_rate must be in the interval (0, 1].")
+
+    effective_target_len = 0
+    if target_len not in (0,):
+        warnings.warn(
+            "target_len is ignored for imputation tasks; using the full temporal "
+            "context as the reconstruction horizon instead.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     samples = _generate_samples(
         data,
@@ -458,7 +466,7 @@ def prepare_custom_dataset(
         week_len=week_len,
         day_len=day_len,
         recent_len=recent_len,
-        target_len=target_len,
+        target_len=effective_target_len,
     )
     train_samples, test_samples = _split_train_test(
         samples, train_ratio=train_ratio, test_ratio=val_ratio
@@ -481,26 +489,6 @@ def prepare_custom_dataset(
     recent_stats, train_recent, val_recent, test_recent = _compute_normalization(
         train_split.recent, val_split.recent, test_split.recent
     )
-
-    def _build_forecast_split(
-        template: DatasetSplit,
-        *,
-        week: np.ndarray,
-        day: np.ndarray,
-        recent: np.ndarray,
-    ) -> ArrayDict:
-        """Convert a ``DatasetSplit`` plus normalized components into an array dict."""
-
-        return {
-            "week": week.astype(np.float32, copy=False),
-            "week_mask": template.week_mask.astype(np.float32, copy=False),
-            "day": day.astype(np.float32, copy=False),
-            "day_mask": template.day_mask.astype(np.float32, copy=False),
-            "recent": recent.astype(np.float32, copy=False),
-            "recent_mask": template.recent_mask.astype(np.float32, copy=False),
-            "target": template.target.astype(np.float32, copy=False),
-            "target_mask": template.target_mask.astype(np.float32, copy=False),
-        }
 
     def _concatenate_context(split: DatasetSplit) -> Tuple[np.ndarray, np.ndarray]:
         """Return the stacked temporal context and corresponding mask."""
@@ -601,42 +589,31 @@ def prepare_custom_dataset(
             "target_mask": target_mask,
         }
 
-    if task == "forecast":
-        dataset: DatasetDict = {
-            "train": _build_forecast_split(
-                train_split, week=train_week, day=train_day, recent=train_recent
-            ),
-            "val": _build_forecast_split(val_split, week=val_week, day=val_day, recent=val_recent),
-            "test": _build_forecast_split(
-                test_split, week=test_week, day=test_day, recent=test_recent
-            ),
-        }
+    if impute_seed is None:
+        train_rng = np.random.default_rng()
+        val_rng = np.random.default_rng()
+        test_rng = np.random.default_rng()
     else:
-        if impute_seed is None:
-            train_rng = np.random.default_rng()
-            val_rng = np.random.default_rng()
-            test_rng = np.random.default_rng()
-        else:
-            train_rng = np.random.default_rng(impute_seed)
-            val_rng = np.random.default_rng(impute_seed + 1)
-            test_rng = np.random.default_rng(impute_seed + 2)
+        train_rng = np.random.default_rng(impute_seed)
+        val_rng = np.random.default_rng(impute_seed + 1)
+        test_rng = np.random.default_rng(impute_seed + 2)
 
-        dataset = {
-            "train": _build_imputation_split(
-                train_split, week=train_week, day=train_day, recent=train_recent, rng=train_rng, rate=impute_rate
-            ),
-            "val": _build_imputation_split(
-                val_split, week=val_week, day=val_day, recent=val_recent, rng=val_rng, rate=impute_rate
-            ),
-            "test": _build_imputation_split(
-                test_split,
-                week=test_week,
-                day=test_day,
-                recent=test_recent,
-                rng=test_rng,
-                rate=impute_rate,
-            ),
-        }
+    dataset = {
+        "train": _build_imputation_split(
+            train_split, week=train_week, day=train_day, recent=train_recent, rng=train_rng, rate=impute_rate
+        ),
+        "val": _build_imputation_split(
+            val_split, week=val_week, day=val_day, recent=val_recent, rng=val_rng, rate=impute_rate
+        ),
+        "test": _build_imputation_split(
+            test_split,
+            week=test_week,
+            day=test_day,
+            recent=test_recent,
+            rng=test_rng,
+            rate=impute_rate,
+        ),
+    }
 
     stats: StatsDict = {
         component: {
