@@ -1,4 +1,4 @@
-"""Train an HSPGNN model on a custom CSV dataset without modifying the repo."""
+"""Train an HSPGNN model on custom CSV data for forecasting or imputation."""
 
 from __future__ import annotations
 
@@ -15,13 +15,16 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from custom_dataset_utils import prepare_custom_dataset
-from model import HSPGCN, HSPGCN_L
+from model import HSPGCN, HSPGCNImputer, HSPGCN_L
 
 
 MODEL_FACTORY = {
     "HSPGCN": HSPGCN,
     "HSPGCN_L": HSPGCN_L,
+    "HSPGCNImputer": HSPGCNImputer,
 }
+
+IMPUTATION_MODELS = {"HSPGCNImputer"}
 
 
 def _load_config_file(path: Path) -> Dict[str, Any]:
@@ -139,15 +142,26 @@ def train(args: argparse.Namespace) -> None:
         target_len=args.target_len,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
+        task=args.task,
+        impute_rate=args.impute_rate,
+        impute_seed=args.impute_seed,
     )
 
     temporal_window = args.week_len + args.day_len + args.recent_len
-    if temporal_window != 60:
-        raise ValueError(
-            "The current model expects week_len + day_len + recent_len to equal 60."
-        )
-    if args.target_len != 6:
-        raise ValueError("The current model outputs six steps; set --target-len 6.")
+    if args.task == "forecast":
+        if temporal_window != 60:
+            raise ValueError(
+                "The current forecasting heads expect week_len + day_len + recent_len to equal 60."
+            )
+        if args.target_len != 6:
+            raise ValueError("The forecasting models output six steps; set --target-len 6.")
+    else:
+        target_horizon = dataset["train"]["target"].shape[-1]
+        if target_horizon != temporal_window:
+            raise ValueError(
+                "Imputation datasets must expose the full temporal window as the target. "
+                f"Received {target_horizon} steps instead of {temporal_window}."
+            )
 
     num_nodes = adjacency.shape[0]
     requested_device = torch.device(args.device)
@@ -329,6 +343,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "target_len": 6,
         "train_ratio": 0.6,
         "val_ratio": 0.2,
+        "task": "forecast",
+        "impute_rate": 0.1,
+        "impute_seed": None,
         "batch_size": 16,
         "max_epoch": 50,
         "learning_rate": 5e-4,
@@ -415,6 +432,24 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "Fraction of samples allocated to testing. The validation split mirrors this "
             "portion so existing training loops can continue to reference 'val'."
         ),
+    )
+    parser.add_argument(
+        "--task",
+        choices=("forecast", "impute"),
+        default=SUPPRESS,
+        help="Learning objective: 'forecast' (default) or 'impute' for missing-value completion.",
+    )
+    parser.add_argument(
+        "--impute-rate",
+        type=float,
+        default=SUPPRESS,
+        help="When --task=impute, fraction of observed entries masked per sample (default: 0.1).",
+    )
+    parser.add_argument(
+        "--impute-seed",
+        type=int,
+        default=SUPPRESS,
+        help="Random seed controlling the artificial masks for imputation (default: random).",
     )
     parser.add_argument("--batch-size", type=int, default=SUPPRESS)
     parser.add_argument("--max-epoch", type=int, default=SUPPRESS)
@@ -516,6 +551,23 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     if args.adjacency is None:
         parser.error(
             "An adjacency CSV must be provided via --adjacency or the configuration file."
+        )
+
+    if args.task not in {"forecast", "impute"}:
+        parser.error("--task must be either 'forecast' or 'impute'.")
+
+    provided_model = "model" in raw_dict or "model" in config_data
+    if args.task == "impute":
+        if not provided_model:
+            args.model = "HSPGCNImputer"
+        elif args.model not in IMPUTATION_MODELS:
+            parser.error(
+                "Imputation mode requires one of the following models: "
+                + ", ".join(sorted(IMPUTATION_MODELS))
+            )
+    elif args.model in IMPUTATION_MODELS:
+        parser.error(
+            "The selected model is designed for imputation. Specify --task impute to use it."
         )
 
     return args
