@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 from argparse import Namespace, SUPPRESS
 import json
+import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -283,8 +284,89 @@ def train(args: argparse.Namespace) -> None:
     print(f"Logged metrics to {metrics_path}")
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Parse command line arguments and optional JSON configuration files."""
+
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # ``ArgumentParser`` marks options as required when neither defaults nor
+    # values are supplied before parsing.  To support configuration files, we
+    # first extract ``--config`` and load its contents so that the subsequent
+    # parser can treat everything as optional until we combine the sources.
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument(
+        "--config",
+        type=str,
+        help=(
+            "Path to a JSON configuration file. Values defined in the file are used "
+            "as defaults and may be overridden via additional command line flags."
+        ),
+        default=None,
+    )
+    config_args, remaining_argv = config_parser.parse_known_args(argv)
+
+    config_data: Dict[str, Any] = {}
+    config_path: Optional[Path] = None
+    if config_args.config is not None:
+        config_path = Path(config_args.config).expanduser()
+        if not config_path.is_file():
+            config_parser.error(f"Configuration file {config_path} does not exist.")
+        try:
+            config_data = _load_config_file(config_path)
+        except ValueError as exc:  # pragma: no cover - defensive branch
+            config_parser.error(str(exc))
+
+    defaults: Dict[str, Any] = {
+        "timeseries": None,
+        "adjacency": None,
+        "delimiter": ",",
+        "transpose_timeseries": False,
+        "missing_value": None,
+        "week_len": 12,
+        "day_len": 12,
+        "recent_len": 36,
+        "target_len": 6,
+        "train_ratio": 0.6,
+        "val_ratio": 0.2,
+        "batch_size": 16,
+        "max_epoch": 50,
+        "learning_rate": 5e-4,
+        "weight_decay": 0.0,
+        "lr_decay": 1.0,
+        "device": "cpu",
+        "model": "HSPGCN",
+        "hidden_dim": 64,
+        "K": 3,
+        "Kt": 3,
+        "output_dir": "custom_experiments",
+        "save_predictions": False,
+        "no_shuffle": False,
+    }
+
+    if config_data:
+        # Work on a shallow copy to avoid mutating the dictionary returned from
+        # ``json.load`` if the caller reuses it elsewhere.
+        config_data = dict(config_data)
+
+        def _consume_alias(alias: str, canonical: str) -> None:
+            """Map alternate configuration keys to the canonical CLI flag."""
+
+            if alias in config_data:
+                if canonical not in config_data:
+                    config_data[canonical] = config_data[alias]
+                config_data.pop(alias, None)
+
+        # Allow intuitive aliases that mirror the helper function signature or
+        # documentation examples.  Users that followed earlier revisions of the
+        # script may still rely on these names.
+        _consume_alias("timeseries_path", "timeseries")
+        _consume_alias("adjacency_path", "adjacency")
+        _consume_alias("output_path", "output_dir")
+        _consume_alias("output_directory", "output_dir")
+        _consume_alias("save_prediction", "save_predictions")
+
+    parser = argparse.ArgumentParser(description=__doc__, argument_default=SUPPRESS)
     parser.add_argument(
         "--config",
         type=str,
@@ -358,72 +440,15 @@ def parse_args() -> argparse.Namespace:
         help="Disable shuffling of the training set batches.",
     )
 
-    raw_args = parser.parse_args()
+    raw_args = parser.parse_args(remaining_argv)
     raw_dict = vars(raw_args)
 
-    config_data: Dict[str, Any] = {}
-    config_path: Optional[Path] = None
-    if "config" in raw_dict:
-        config_path = Path(raw_dict.pop("config")).expanduser()
-        if not config_path.is_file():
-            parser.error(f"Configuration file {config_path} does not exist.")
-        try:
-            config_data = _load_config_file(config_path)
-        except ValueError as exc:
-            parser.error(str(exc))
-
-    defaults: Dict[str, Any] = {
-        "timeseries": None,
-        "adjacency": None,
-        "delimiter": ",",
-        "transpose_timeseries": False,
-        "missing_value": None,
-        "week_len": 12,
-        "day_len": 12,
-        "recent_len": 36,
-        "target_len": 6,
-        "train_ratio": 0.6,
-        "val_ratio": 0.2,
-        "batch_size": 16,
-        "max_epoch": 50,
-        "learning_rate": 5e-4,
-        "weight_decay": 0.0,
-        "lr_decay": 1.0,
-        "device": "cpu",
-        "model": "HSPGCN",
-        "hidden_dim": 64,
-        "K": 3,
-        "Kt": 3,
-        "output_dir": "custom_experiments",
-        "save_predictions": False,
-        "no_shuffle": False,
-    }
-
     if config_data:
-        def _consume_alias(alias: str, canonical: str) -> None:
-            """Map alternate configuration keys to the canonical CLI flag."""
-
-            if alias in config_data:
-                if canonical not in config_data:
-                    config_data[canonical] = config_data[alias]
-                config_data.pop(alias, None)
-
-        # Allow intuitive aliases that mirror the helper function signature or
-        # documentation examples.  Users that followed earlier revisions of the
-        # script may still rely on these names.
-        _consume_alias("timeseries_path", "timeseries")
-        _consume_alias("adjacency_path", "adjacency")
-        _consume_alias("output_path", "output_dir")
-        _consume_alias("output_directory", "output_dir")
-        _consume_alias("save_prediction", "save_predictions")
-
         known_options = set(defaults)
         known_options.add("config")
         unknown_keys = sorted(set(config_data) - known_options)
         if unknown_keys:
-            parser.error(
-                "Unknown configuration options: " + ", ".join(unknown_keys)
-            )
+            parser.error("Unknown configuration options: " + ", ".join(unknown_keys))
 
     resolved: Dict[str, Any] = {**defaults, **config_data, **raw_dict}
     resolved["config"] = str(config_path) if config_path is not None else None
