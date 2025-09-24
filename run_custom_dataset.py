@@ -279,8 +279,12 @@ def train(args: argparse.Namespace) -> None:
 
     best_val_loss = float("inf")
     best_state = None
+    epochs_without_improvement = 0
+    epoch = 0
+    stop_reason: Optional[str] = None
 
-    for epoch in range(1, args.max_epoch + 1):
+    while True:
+        epoch += 1
         net.train()
         epoch_losses = []
         for batch in train_loader:
@@ -312,6 +316,24 @@ def train(args: argparse.Namespace) -> None:
                 "epoch": epoch,
                 "val_loss": val_loss,
             }
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+
+        patience = args.patience
+        if patience is not None and epochs_without_improvement >= patience:
+            stop_reason = f"patience ({patience} epochs without improvement)"
+            break
+
+        if args.max_epoch is not None and epoch >= args.max_epoch:
+            stop_reason = "max_epoch"
+            break
+
+    if stop_reason is None and args.patience is None and args.max_epoch is not None:
+        stop_reason = "max_epoch"
+
+    if stop_reason is not None:
+        print(f"Stopping training due to {stop_reason}.")
 
     if best_state is None:
         raise RuntimeError("Training did not produce a valid model state.")
@@ -368,7 +390,11 @@ def train(args: argparse.Namespace) -> None:
         "test_loss": test_loss,
         "test_mae": test_mae,
         "test_rmse": test_rmse,
+        "best_epoch": best_state["epoch"],
+        "epochs_trained": epoch,
     }
+    if stop_reason is not None:
+        metrics["stop_reason"] = stop_reason
     metrics_path.write_text(json.dumps(metrics, indent=2))
     print(f"Logged metrics to {metrics_path}")
 
@@ -422,7 +448,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "impute_seed": None,
         "task": "impute",
         "batch_size": 16,
-        "max_epoch": 50,
+        "patience": 10,
+        "max_epoch": None,
         "learning_rate": 5e-4,
         "weight_decay": 0.0,
         "lr_decay": 1.0,
@@ -538,7 +565,24 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Random seed controlling the artificial masks for imputation (default: random).",
     )
     parser.add_argument("--batch-size", type=int, default=SUPPRESS)
-    parser.add_argument("--max-epoch", type=int, default=SUPPRESS)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=SUPPRESS,
+        help=(
+            "Early-stopping patience. Training stops after this many epochs without "
+            "validation improvement."
+        ),
+    )
+    parser.add_argument(
+        "--max-epoch",
+        type=int,
+        default=SUPPRESS,
+        help=(
+            "Optional cap on the number of training epochs. When omitted, training "
+            "relies solely on the patience criterion."
+        ),
+    )
     parser.add_argument("--learning-rate", type=float, default=SUPPRESS)
     parser.add_argument("--weight-decay", type=float, default=SUPPRESS)
     parser.add_argument("--lr-decay", type=float, default=SUPPRESS)
@@ -650,6 +694,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # whenever the dedicated imputation model is requested.
     if getattr(args, "model", None) == "HSPGCNImputer":
         args.task = "impute"
+
+    if args.patience is not None and args.patience < 1:
+        parser.error("--patience must be a positive integer when provided.")
+
+    if args.max_epoch is not None and args.max_epoch < 1:
+        parser.error("--max-epoch must be a positive integer when provided.")
+
+    if args.patience is None and args.max_epoch is None:
+        parser.error("At least one of --patience or --max-epoch must be specified.")
 
     return args
 
