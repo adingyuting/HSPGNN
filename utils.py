@@ -82,17 +82,26 @@ class T_cheby_conv_ds(nn.Module):
         return out
 
 
-A=np.zeros((60,60))
-for i in range(12):
-    for j in range(12):
-        A[i,j]=1
-        A[i+12,j+12]=1
-        A[i+24,j+24]=1
-for i in range(24):
-    for j in range(24):        
-        A[i+36,j+36]=1
-B=(-1e13)*(1-A)  
-B = torch.tensor(B, dtype=torch.float32)
+def _default_temporal_attention_bias(tem_size: int) -> torch.Tensor:
+    """Return the large-negative bias mask used by the original implementation.
+
+    The legacy code assumes a fixed 60-step window arranged as three 12-step
+    blocks followed by a 24-step block.  When that exact layout is present we
+    reproduce the historical behaviour to keep backwards compatibility.  For
+    any other temporal length we fall back to a zero mask so the attention can
+    adapt to the provided context instead of crashing due to shape mismatch.
+    """
+
+    if tem_size == 60:
+        mask = torch.zeros((tem_size, tem_size), dtype=torch.float32)
+        # Three 12-step blocks.
+        for offset in (0, 12, 24):
+            mask[offset : offset + 12, offset : offset + 12] = 1.0
+        # One 24-step block at the end.
+        mask[36:60, 36:60] = 1.0
+        return (-1e13) * (1.0 - mask)
+
+    return torch.zeros((tem_size, tem_size), dtype=torch.float32)
 
 
 class TATT_1(nn.Module):
@@ -109,6 +118,7 @@ class TATT_1(nn.Module):
         self.v=nn.Parameter(torch.rand(tem_size,tem_size), requires_grad=True)
         nn.init.xavier_uniform_(self.v)
         self.bn=BatchNorm1d(tem_size)
+        self.register_buffer("bias_mask", _default_temporal_attention_bias(tem_size))
 
     def forward(self,seq):
         c1 = seq.permute(0,1,3,2)#b,c,n,l->b,c,l,n
@@ -127,7 +137,7 @@ class TATT_1(nn.Module):
 
         logits = logits.permute(0,2,1).contiguous()
         logits = self.bn(logits).permute(0,2,1).contiguous()
-        coefs = torch.softmax(logits + B.to(logits.device), -1)
+        coefs = torch.softmax(logits + self.bias_mask.to(logits.device), -1)
         return coefs
 
 
