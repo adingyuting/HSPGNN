@@ -332,6 +332,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "val_ratio": 0.2,
         "impute_rate": 0.1,
         "impute_seed": None,
+        "task": "impute",
         "batch_size": 16,
         "max_epoch": 50,
         "learning_rate": 5e-4,
@@ -422,6 +423,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=(
             "Fraction of samples allocated to testing. The validation split mirrors this "
             "portion so existing training loops can continue to reference 'val'."
+        ),
+    )
+    parser.add_argument(
+        "--task",
+        choices=("forecast", "impute"),
+        default=SUPPRESS,
+        help=(
+            "Task type. Selecting the HSPGCNImputer forces 'impute'; other models may"
+            " expose forecasting heads."
         ),
     )
     parser.add_argument(
@@ -540,6 +550,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     if "model" not in raw_dict and "model" not in config_data:
         args.model = "HSPGCNImputer"
+
+    # ``task`` used to be a required CLI flag in earlier revisions when both
+    # forecasting and imputation were supported.  Some user configurations still
+    # provide it, and the legacy command-line check raised an error if the
+    # imputation head was selected without explicitly setting ``--task impute``.
+    # To keep those setups working, automatically coerce the task to ``impute``
+    # whenever the dedicated imputation model is requested.
+    if getattr(args, "model", None) == "HSPGCNImputer":
+        args.task = "impute"
 
     return args
 
