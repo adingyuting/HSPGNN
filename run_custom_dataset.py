@@ -416,9 +416,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "day_len": 12,
         "recent_len": 36,
         "target_len": 0,
-        "train_ratio": 0.6,
+        "train_ratio": 0.8,
         "val_ratio": 0.2,
-        "impute_rate": 0.1,
+        "impute_rate": 0.0,
         "impute_seed": None,
         "task": "impute",
         "batch_size": 16,
@@ -526,7 +526,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--impute-rate",
         type=float,
         default=SUPPRESS,
-        help="Fraction of observed entries masked per sample (default: 0.1).",
+        help=(
+            "Fraction of observed entries masked per sample. Use 0 to rely solely on"
+            " the naturally missing values (default: 0)."
+        ),
     )
     parser.add_argument(
         "--impute-seed",

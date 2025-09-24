@@ -8,10 +8,10 @@ logic.  The utilities intentionally mirror the layout created by
 specific assumptions so that arbitrary graph signals can be consumed.
 
 The routines focus on *missing-value imputation* tasks: the temporal context
-windows are normalised and a fraction of observed entries is masked out so the
-model learns to reconstruct them.  Forecasting-specific branches from earlier
-revisions were removed to keep the helpers dedicated to the imputation use
-case.
+windows are normalised and, by default, only the entries observed in the raw
+data contribute to the reconstruction loss.  Users that still wish to create
+additional supervision can opt-in by setting ``impute_rate`` to a positive
+value, which randomly hides a subset of the observed entries.
 
 Typical usage::
 
@@ -386,9 +386,9 @@ def prepare_custom_dataset(
     day_len: int = 12,
     recent_len: int = 36,
     target_len: int = 0,
-    train_ratio: float = 0.6,
+    train_ratio: float = 0.8,
     val_ratio: float = 0.2,
-    impute_rate: float = 0.1,
+    impute_rate: float = 0.0,
     impute_seed: int | None = None,
 ) -> Tuple[DatasetDict, StatsDict, np.ndarray]:
     """Prepare a dataset compatible with the imputation training scripts.
@@ -417,10 +417,12 @@ def prepare_custom_dataset(
         validation split mirrors the testing portion so downstream code can
         continue to access both keys.
     impute_rate:
-        Fraction of observed entries that are dropped at random and used as
-        supervised targets.  The mask is applied independently to the
-        train/validation/testing splits with distinct random generators for
-        reproducibility.
+        Optional fraction of observed entries that are dropped at random and
+        used as additional supervised targets.  Set to ``0`` (default) to rely
+        solely on the naturally missing entries present in the data.  The mask
+        is applied independently to the train/validation/testing splits with
+        distinct random generators for reproducibility when the rate is
+        positive.
     impute_seed:
         Optional random seed used when generating the artificial missing masks
         for the imputation task.  ``None`` (default) relies on NumPy's global
@@ -448,8 +450,10 @@ def prepare_custom_dataset(
             % (data.shape[0], adjacency.shape[0])
         )
 
-    if not 0 < impute_rate <= 1.0:
-        raise ValueError("impute_rate must be in the interval (0, 1].")
+    if impute_rate is None:
+        impute_rate = 0.0
+    if impute_rate < 0.0 or impute_rate > 1.0:
+        raise ValueError("impute_rate must lie in the interval [0, 1].")
 
     effective_target_len = 0
     if target_len not in (0,):
@@ -517,66 +521,67 @@ def prepare_custom_dataset(
         week: np.ndarray,
         day: np.ndarray,
         recent: np.ndarray,
-        rng: np.random.Generator,
+        rng: np.random.Generator | None,
         rate: float,
     ) -> ArrayDict:
-        """Create an imputation split by masking additional entries."""
+        """Create an imputation split while optionally masking extra entries."""
 
         week_len_local = week.shape[-1]
         day_len_local = day.shape[-1]
         recent_len_local = recent.shape[-1]
-        temporal_window = week_len_local + day_len_local + recent_len_local
-
         context, context_mask = _concatenate_context(template)
-        drop_candidates = context_mask > 0.5
-        random_matrix = rng.random(context_mask.shape, dtype=np.float64)
-        drop_mask = (random_matrix < rate) & drop_candidates
+        week_mask = (template.week_mask > 0.5).astype(np.float32)
+        day_mask = (template.day_mask > 0.5).astype(np.float32)
+        recent_mask = (template.recent_mask > 0.5).astype(np.float32)
 
-        flat_drop = drop_mask.reshape(drop_mask.shape[0], -1)
-        flat_candidates = drop_candidates.reshape(drop_candidates.shape[0], -1)
-        for row_idx in range(flat_drop.shape[0]):
-            if not flat_drop[row_idx].any():
-                candidate_indices = np.flatnonzero(flat_candidates[row_idx])
-                if candidate_indices.size:
-                    chosen = rng.choice(candidate_indices)
-                    flat_drop[row_idx, chosen] = True
-        drop_mask = flat_drop.reshape(drop_mask.shape)
-
-        week_mask = template.week_mask.astype(np.float32, copy=True)
-        day_mask = template.day_mask.astype(np.float32, copy=True)
-        recent_mask = template.recent_mask.astype(np.float32, copy=True)
-
-        week_mask[week_mask < 0.5] = 0.0
-        day_mask[day_mask < 0.5] = 0.0
-        recent_mask[recent_mask < 0.5] = 0.0
-
-        # Ensure artificially dropped entries are hidden from the model inputs.
-        week_slice = np.expand_dims(drop_mask[:, :, :week_len_local], axis=1)
-        day_slice = np.expand_dims(
-            drop_mask[:, :, week_len_local : week_len_local + day_len_local], axis=1
-        )
-        recent_slice = np.expand_dims(drop_mask[:, :, week_len_local + day_len_local :], axis=1)
-
-        week_mask[week_slice] = 0.0
-        day_mask[day_slice] = 0.0
-        recent_mask[recent_slice] = 0.0
-
-        # Replace hidden entries with zeros (equivalent to the normalized mean).
         week = week.astype(np.float32, copy=True)
         day = day.astype(np.float32, copy=True)
         recent = recent.astype(np.float32, copy=True)
 
-        week[week_slice] = 0.0
-        day[day_slice] = 0.0
-        recent[recent_slice] = 0.0
+        if rate > 0.0 and rng is not None:
+            drop_candidates = context_mask > 0.5
+            random_matrix = rng.random(context_mask.shape, dtype=np.float64)
+            drop_mask = (random_matrix < rate) & drop_candidates
 
-        # Also blank out positions that were already missing in the raw data.
+            flat_drop = drop_mask.reshape(drop_mask.shape[0], -1)
+            flat_candidates = drop_candidates.reshape(drop_candidates.shape[0], -1)
+            for row_idx in range(flat_drop.shape[0]):
+                if not flat_drop[row_idx].any():
+                    candidate_indices = np.flatnonzero(flat_candidates[row_idx])
+                    if candidate_indices.size:
+                        chosen = rng.choice(candidate_indices)
+                        flat_drop[row_idx, chosen] = True
+            drop_mask = flat_drop.reshape(drop_mask.shape)
+        else:
+            drop_mask = np.zeros_like(context_mask, dtype=bool)
+
+        week_slice = np.expand_dims(drop_mask[:, :, :week_len_local], axis=1)
+        day_slice = np.expand_dims(
+            drop_mask[:, :, week_len_local : week_len_local + day_len_local], axis=1
+        )
+        recent_slice = np.expand_dims(
+            drop_mask[:, :, week_len_local + day_len_local :], axis=1
+        )
+
+        if drop_mask.any():
+            week_mask = week_mask.copy()
+            day_mask = day_mask.copy()
+            recent_mask = recent_mask.copy()
+
+            week_mask[week_slice] = 0.0
+            day_mask[day_slice] = 0.0
+            recent_mask[recent_slice] = 0.0
+
+        # Remove entries that are either originally missing or were dropped.
         week[week_mask < 0.5] = 0.0
         day[day_mask < 0.5] = 0.0
         recent[recent_mask < 0.5] = 0.0
 
         target = context.astype(np.float32, copy=True)
-        target_mask = drop_mask.astype(np.float32)
+        if drop_mask.any():
+            target_mask = drop_mask.astype(np.float32)
+        else:
+            target_mask = context_mask.astype(np.float32)
 
         return {
             "week": week,
@@ -589,21 +594,34 @@ def prepare_custom_dataset(
             "target_mask": target_mask,
         }
 
-    if impute_seed is None:
-        train_rng = np.random.default_rng()
-        val_rng = np.random.default_rng()
-        test_rng = np.random.default_rng()
+    if impute_rate > 0.0:
+        if impute_seed is None:
+            train_rng = np.random.default_rng()
+            val_rng = np.random.default_rng()
+            test_rng = np.random.default_rng()
+        else:
+            train_rng = np.random.default_rng(impute_seed)
+            val_rng = np.random.default_rng(impute_seed + 1)
+            test_rng = np.random.default_rng(impute_seed + 2)
     else:
-        train_rng = np.random.default_rng(impute_seed)
-        val_rng = np.random.default_rng(impute_seed + 1)
-        test_rng = np.random.default_rng(impute_seed + 2)
+        train_rng = val_rng = test_rng = None
 
     dataset = {
         "train": _build_imputation_split(
-            train_split, week=train_week, day=train_day, recent=train_recent, rng=train_rng, rate=impute_rate
+            train_split,
+            week=train_week,
+            day=train_day,
+            recent=train_recent,
+            rng=train_rng,
+            rate=impute_rate,
         ),
         "val": _build_imputation_split(
-            val_split, week=val_week, day=val_day, recent=val_recent, rng=val_rng, rate=impute_rate
+            val_split,
+            week=val_week,
+            day=val_day,
+            recent=val_recent,
+            rng=val_rng,
+            rate=impute_rate,
         ),
         "test": _build_imputation_split(
             test_split,
