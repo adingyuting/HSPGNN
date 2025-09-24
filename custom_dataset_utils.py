@@ -435,42 +435,30 @@ def prepare_custom_dataset(
         train_split.recent, val_split.recent, test_split.recent
     )
 
-    splits: DatasetDict = {
-        "train": {
-            "week": train_week,
-            "week_mask": train_split.week_mask,
-            "day": train_day,
-            "day_mask": train_split.day_mask,
-            "recent": train_recent,
-            "recent_mask": train_split.recent_mask,
-            "target": train_split.target,
-            "target_mask": train_split.target_mask,
-        },
-        "val": {
-            "week": val_week,
-            "week_mask": val_split.week_mask,
-            "day": val_day,
-            "day_mask": val_split.day_mask,
-            "recent": val_recent,
-            "recent_mask": val_split.recent_mask,
-            "target": val_split.target,
-            "target_mask": val_split.target_mask,
-        },
-        "test": {
-            "week": test_week,
-            "week_mask": test_split.week_mask,
-            "day": test_day,
-            "day_mask": test_split.day_mask,
-            "recent": test_recent,
-            "recent_mask": test_split.recent_mask,
-            "target": test_split.target,
-            "target_mask": test_split.target_mask,
-        },
-    }
+    def _build_split(
+        template: DatasetSplit,
+        *,
+        week: np.ndarray,
+        day: np.ndarray,
+        recent: np.ndarray,
+    ) -> ArrayDict:
+        """Convert a ``DatasetSplit`` plus normalized components into an array dict."""
+
+        return {
+            "week": week.astype(np.float32, copy=False),
+            "week_mask": template.week_mask.astype(np.float32, copy=False),
+            "day": day.astype(np.float32, copy=False),
+            "day_mask": template.day_mask.astype(np.float32, copy=False),
+            "recent": recent.astype(np.float32, copy=False),
+            "recent_mask": template.recent_mask.astype(np.float32, copy=False),
+            "target": template.target.astype(np.float32, copy=False),
+            "target_mask": template.target_mask.astype(np.float32, copy=False),
+        }
 
     dataset: DatasetDict = {
-        split: {key: value.astype(np.float32) for key, value in arrays.items()}
-        for split, arrays in splits.items()
+        "train": _build_split(train_split, week=train_week, day=train_day, recent=train_recent),
+        "val": _build_split(val_split, week=val_week, day=val_day, recent=val_recent),
+        "test": _build_split(test_split, week=test_week, day=test_day, recent=test_recent),
     }
 
     stats: StatsDict = {
